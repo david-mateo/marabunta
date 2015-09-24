@@ -57,6 +57,8 @@ class XBeeNetwork(BaseNetwork):
     by *window_start*, *window_end*, and *period*.
     The incoming data in the serial port is continually
     scanned for new messages.
+    When receiving a message, its content is assumed to have
+    a certain structure defined by the first two characters.
     """
     #TODO More general connection than serial port to /dev/ttyUSB* should be considered?
     def __init__(self, window_start, window_end, period, ID=None, lock=None):
@@ -73,8 +75,17 @@ class XBeeNetwork(BaseNetwork):
         self.lock = lock
         self.broadcasting = False
         self.port = None
-        self.positions = {}
+        self.poses = {}
+        self.inbox = Queue.LifoQueue()
         self.outbox = Queue.LifoQueue()
+        self.awake = threading.Event()
+        self.awake.set()
+        self.parser = { "xx":self.parse_position ,
+                        "tt":self.parse_heading ,
+                        "up":self.parse_wakeup ,
+                        "ss":self.parse_sleep ,
+                        "mm":self.parse_message
+                        }
         return
 
     def start_broadcasting(self):
@@ -122,6 +133,7 @@ class XBeeNetwork(BaseNetwork):
         """
         if self.broadcasting:
             self.broadcasting = False
+            self.awake.set() # force wakeup to finish the threads
             if self.send_thread.is_alive():
                 self.send_thread.join(5)
             if self.read_thread.is_alive():
@@ -131,41 +143,130 @@ class XBeeNetwork(BaseNetwork):
             self.port.close()
         return self.outbox.qsize()
 
+    def standby(self):
+        """If the robot is asleep, check periodically
+        for a wakeup signal (signal starting with "up").
+        Ignores any other message received.
+        Returns the time spent in standby mode.
+        """
+        init_time = time()
+        while not self.is_awake():
+            sleep(2)
+            while self.port.inWaiting() > 0:
+                new_message=self.port.readline()
+                if len(new_message)>1 and new_message[0:2]=="up":
+                    self.parse_wakeup("")
+        return time() - init_time
+
+    def is_awake(self):
+        return self.awake.is_set()
+
+# Sending methods:
+
     def send_state(self,pos,heading):
         """Send string of the form:
-                "x  y   heading time    ID"
+                "xx*x*  *y*   *heading* *time*    *ID*"
         """
-        message = "%.5f\t%.5f\t%.5f\t%.5f\t%s\n"%(pos[0], pos[1], heading, time(), self.ID)
-        self.outbox.put(message)
-        return message
-
-    def send_position(self,pos):
-        """Send string of the form:
-                "x  y   time    ID"
-        """
-        message = "%.5f\t%.5f\t%.5f\t%s\n"%(pos[0], pos[1], time(), self.ID)
+        message = "xx%.5f\t%.5f\t%.5f\t%.5f\t%s\n"%(pos[0], pos[1], heading, time(), self.ID)
         self.outbox.put(message)
         return message
 
     def send_heading(self, heading):
         """Send string of the form:
-                "heading    time    ID"
+                "tt*heading*    *time*    *ID*"
         """
-        message = "%.5f\t%.5f\t%s\n"%(heading, time(), self.ID)
+        message = "tt%.5f\t%.5f\t%s\n"%(heading, time(), self.ID)
         self.outbox.put(message)
         return message
+
+    def send_wakeup(self):
+        """Send wakeup signal to everyone.
+        Message includes the ID and the time.
+        """
+        message = "up%.5f\t%s\n"%(time(), self.ID)
+        self.outbox.put(message)
+        return message
+
+    def send_sleep(self):
+        """Send sleep signal to everyone.
+        Message includes the ID and the time.
+        """
+        message = "ss%.5f\t%s\n"%(time(), self.ID)
+        self.outbox.put(message)
+        return message
+
+    def send_message(self, text):
+        """Sends a generic message given
+        as input.
+        """
+        message="mm"+str(text)
+        self.outbox.put(message)
+        return message
+
+# Processing incoming methods:
+
+    def parse_position(self, message):
+        """Parse a message containing x, y, theta, time, ID"""
+        try:
+            x , y , theta, time , ID = message.rstrip('\n').split()
+            self.poses[ID] = (float(x), float(y), float(theta))
+        except:
+            sys.stderr.write("XBeeNetwork.parse_position(): Bad data received:\n%s\n"%message)
+        return
+
+    def parse_heading(self, message):
+        """Parse a message containing theta, time, ID"""
+        try:
+            theta, time , ID = message.rstrip('\n').split()
+            self.poses[ID] = float(theta)
+        except:
+            sys.stderr.write("XBeeNetwork.parse_heading(): Bad data received:\n%s\n"%message)
+        return
+
+    def parse_wakeup(self, message):
+        """Wakes up the device."""
+        print "# XBee waking up."
+        self.awake.set()
+        return
+
+    def parse_sleep(self, message):
+        """If device is awake, set to sleep and
+        put on standby mode. This method returns
+        only after the device is awake again.
+        """
+        if self.is_awake():
+            print "# XBee going to sleep"
+            self.awake.clear()
+            self.standby()
+        return
+
+    def parse_message(self,message):
+        self.inbox.put(message)
+        return
+
+    def get_incomings(self):
+        """Returns all incoming messages received since
+        last call to this method. The messages are
+        returned in a list sorted from newest to oldest
+        (FILO stack).
+        """
+        incomings = []
+        while not self.inbox.empty():
+            incomings.append( self.inbox.get() )
+            self.inbox.task_done()
+        return incomings
 
     def get_agents_state(self):
         """Returns the dictionary with the
         data gathered from the network through the
         read_background thread.
         """
-        return self.positions
+        return self.poses
 
 #--- User shouldnt need to call any function below this point
 
     def send(self):
-        """Write the last item put into
+        """Write the most recent item put into
         the outbox into the serial port.
         Return the item.
         """
@@ -181,7 +282,7 @@ class XBeeNetwork(BaseNetwork):
         time slot is right.
         When the proper time slot is reached, this
         sends the last put item in the Queue
-        and erase the rest.
+        and erases the rest.
         """
         while self.broadcasting:
             t = time()%self.period
@@ -204,31 +305,31 @@ class XBeeNetwork(BaseNetwork):
                     # call again time() as the thread-safe operation
                     # can take a sizeable amount of time.
                     sleep( self.window_end - time()%self.period ) # make sure only one message per window is sent.
+            self.awake.wait() # wait until the device is awake.
         return
 
     def read(self):
         """If there is an incoming message wait until
-        a whole line is receive it, then parse it and
-        store the processed data into self.position.
+        a whole line is receive, then parse using
+        the appropiate parser function according to
+        the "key" of the message (first two characters).
         A certain structure for the message is assumed,
         if the message fails to follow the structure a
         warning is sent to stderr and the message is
         ignored.
+        New keys should be added to the keys-to-parsers
+        dict, self.parser.
         Returns the received message.
-
-        TODO Future implementation: have a first
-        code in the message that informs what
-        structure it is following out of a set
-        a set of given pre-programmed structures.
         """
         message=''
         if self.port.inWaiting() > 0:
             message=self.port.readline()
-            try:
-                x , y , theta, time , ID = message.rstrip('\n').split()
-                self.positions[ID] = (float(x), float(y), float(theta))
-            except:
-                sys.stderr.write("XBeeNetwork.read(): Bad data received:\n%s\n"%message)
+            if len(message)>1:
+                key = message[0:2]
+                try:
+                    self.parser[key](message[2:])
+                except KeyError:
+                    sys.stderr.write("XBeeNetwork.read(): Received unknown key:\t%s\n"%key)
         return message
 
     def read_background(self):
@@ -242,6 +343,7 @@ class XBeeNetwork(BaseNetwork):
         while self.broadcasting:
             self.read()
             sleep(self.period/15.) # assuming this is enough to catch all messages
+            self.awake.wait()
         return
 
 #...............................................................................................
@@ -257,23 +359,22 @@ class XBeeExpirationNetwork(XBeeNetwork):
         XBeeNetwork.__init__(self,window_start, window_end, period, ID, lock)
         return
 
-    def read(self):
-        message=''
-        if self.port.inWaiting() > 0:
-            message=self.port.readline()
-            try:
-                x , y , theta, time , ID = message.rstrip('\n').split()
-                self.positions[ID] = (float(x), float(y), float(theta))
-                self.expirations[ID] = float(time) + self.expiration_time
-            except:
-                sys.stderr.write("XBeeNetwork.read(): Bad data: "+message)
-        return message
+    def parse_position(self, message):
+        """Parse a message containing x, y, theta, time, ID.
+        Store the expiration date of the message in self.expirations."""
+        try:
+            x , y , theta, time , ID = message.rstrip('\n').split()
+            self.poses[ID] = (float(x), float(y), float(theta))
+            self.expirations[ID] = float(time) + self.expiration_time
+        except:
+            sys.stderr.write("XBeeNetwork.parse_pose(): Bad data received:\n%s\n"%message)
+        return
 
     def get_agents_state(self):
         """Build a new dictionary that only contains the entries from
-        self.positions that have not yet reached their expiration time.
+        self.poses that have not yet reached their expiration time.
         """
         t = time()
         ids = [ID for ID,exp_time in self.expirations.items() if t < exp_time]
-        g = { ID:self.positions[ID] for ID in ids}
+        g = { ID:self.poses[ID] for ID in ids}
         return g
