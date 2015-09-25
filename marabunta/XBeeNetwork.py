@@ -225,7 +225,6 @@ class XBeeNetwork(BaseNetwork):
 
     def parse_wakeup(self, message):
         """Wakes up the device."""
-        print "# XBee waking up."
         self.awake.set()
         return
 
@@ -235,7 +234,6 @@ class XBeeNetwork(BaseNetwork):
         only after the device is awake again.
         """
         if self.is_awake():
-            print "# XBee going to sleep"
             self.awake.clear()
             self.standby()
         return

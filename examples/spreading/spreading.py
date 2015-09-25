@@ -1,7 +1,5 @@
-from PerimeterDefenseRobot import PerimeterDefenseRobot
-from MockBody import MockBody
-from MockNetwork import MockNetwork
-from math import *
+from marabunta import MockBody, MockNetwork
+from marabunta.models import PerimeterDefenseRobot
 
 dt=1.0
 log = open("the_cloud.dat","w+")

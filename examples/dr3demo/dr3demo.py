@@ -1,6 +1,5 @@
-from PerimeterDefenseRobot import PerimeterDefenseRobot
-from ebotBody import ebotBody
-from XBeeNetwork import *
+from marabunta import ebotBody, XBeeNetwork
+from marabunta.models import PerimeterDefenseRobot
 from math import *
 from time import time,sleep
 import sys

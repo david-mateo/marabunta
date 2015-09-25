@@ -1,5 +1,4 @@
 from math import sin, cos, atan2,pi
-import numpy as np
 
 #...............................................................................................
 class BaseRobot(object):
@@ -171,7 +170,7 @@ class BaseRobot(object):
             obstacles = self.body.obstacle_coordinates()
             # Find the nearest obstacle:
             obs = min(obstacles, key=lambda v: v[0]*v[0]+v[1]*v[1])
-            projection = np.dot(obs, target)/np.dot(obs,obs)
+            projection = (obs[0]*target[0] + obs[1]*target[1])/(obs[0]*obs[0] + obs[1]*obs[1])
             if projection > 0:
                 target[0] -= obs[0]*projection
                 target[1] -= obs[1]*projection

@@ -1,6 +1,5 @@
-from HeadingConsensusRobot import HeadingConsensusRobot
-from ebotBody import ebotBody
-from XBeeNetwork import *
+from marabunta import ebotBody, XBeeNetwork, XBeeExpirationNetwork
+from marabunta.models import PerimeterDefenseRobot
 from math import *
 from time import time,sleep
 import sys
