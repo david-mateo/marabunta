@@ -1,12 +1,13 @@
-from math import sin,cos,pi
+from math import *
 from BaseRobot import BaseBody
+from Map import Map2D
 
 class MockBody(BaseBody):
     """Simulation of a body. Locomotion
     with this body is simply updating
     the values of *pos* and *heading*.
-    No sensors simulated, the obstacle
-    detection returns nothing.
+    Sensors simulated through a Map instance
+    that contains the obstacles to be detected.
     """
     def __init__(self, pos, heading, max_speed = 0.15, LRdist = 0.1, aperture = 0.7854):
         # State
@@ -16,18 +17,12 @@ class MockBody(BaseBody):
         self.max_speed = max_speed
         self.LRdist  = LRdist
         self.aperture = aperture
-        # Sensors
-        default = None
-        self.ultrasL = default
-        self.ultrasC = default
-        self.ultrasR = default
-        self.gyro = default
         return
 
     def move_forward(self, dt, v = None):
         """Move in current direction for dt time.
         """
-        if not v:
+        if v==None:
             v = self.max_speed
         self.pos[0] += v * cos(self.heading) * dt
         self.pos[1] += v * sin(self.heading) * dt
@@ -60,17 +55,59 @@ class MockBody(BaseBody):
         """
         return self.heading
 
-    def get_ultrasound(self):
-        """No sensor simulation right now.
-        Returns an array with infinities.
+
+    def load_obstacles(self, filename):
+        """Load the obstacles stored in *filename*
+        using a Map2D instance. Using a Map2D will
+        automatically store the obstacles in a grid
+        for fast access to nearby obstacles.
         """
-        return [float("inf"), float("inf"), float("inf"), float("inf"), float("inf")]
+        self.obstacles = Map2D(filename, 0.5)
+        return
+
+    def get_ultrasound(self):
+        """Return the distance to all the
+        nearby obstacles (as defined by the
+        Map2D instance). If no instance is
+        stored in self.obstacles, return []
+        """
+        try:
+            obstacles_near = self.obstacles.obstacles_near(self.pos)
+        except:
+            return []
+        x , y = self.pos
+        return [ sqrt( (o[0]-x)**2 + (o[1]-y)**2 ) for o in obstacles_near ]
 
     def obstacle_coordinates(self):
-        """No sensor simulation right now.
-        Returns None.
+        """Return the relative position of all the
+        nearby obstacles (as defined by the
+        Map2D instance). If no instance is
+        stored in self.obstacles, return []
         """
-        return None
+        try:
+            obstacles_near = self.obstacles.obstacles_near(self.pos)
+        except:
+            return []
+        x , y = self.pos
+        return [ [o[0]-x, o[1]-y] for o in obstacles_near]
+
+    def obstacle_infront(self):
+        """Return True if an obstacle is "in front", meaning
+        that extreme measures such as stopping the movement
+        have to be taken to avoid a collision.
+        Used by move_forward() to stop the robot in case
+        something is too close.
+        """
+        return any( d<0.2 for d in self.get_ultrasound() if d)
+
+    def obstacle_near(self):
+        """Return True if an obstacle is "near" meaning
+        that the robot should be aware of the existence
+        of the obstacle even if it may not collide
+        directly.
+        """
+        return any( d<0.4 for d in self.get_ultrasound() if d)
+
 
     def get_wheel_distance(self):
         return self.LRdist

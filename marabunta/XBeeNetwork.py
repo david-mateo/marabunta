@@ -82,6 +82,8 @@ class XBeeNetwork(BaseNetwork):
         self.awake.set()
         self.parser = { "xx":self.parse_position ,
                         "tt":self.parse_heading ,
+                        "oo":self.parse_obstacles ,
+                        "xo":self.parse_position_obstacles ,
                         "up":self.parse_wakeup ,
                         "ss":self.parse_sleep ,
                         "mm":self.parse_message
@@ -108,13 +110,13 @@ class XBeeNetwork(BaseNetwork):
                     connected=False
                 if connected:
                     self.port = port
-                    for i in range(3):
+                    for i in range(7):
                         self.port.flushInput()
                         self.port.flushOutput()
                     break
             if not connected:
                 self.port = None
-                raise Exception("XBeeNetwork: could not connect to Xbee")
+                raise Exception("marabunta.XBeeNetwork.start_broadcasting: could not connect to Xbee")
             self.broadcasting = True
             self.send_thread = threading.Thread(target = self.send_background)
             self.send_thread.start()
@@ -139,7 +141,7 @@ class XBeeNetwork(BaseNetwork):
             if self.read_thread.is_alive():
                 self.read_thread.join(5)
             if self.send_thread.is_alive() or self.read_thread.is_alive():
-                raise Exception("XBeeNetwork: Could not stop background threads properly")
+                raise Exception("marabunta.XBeeNetwork.stop_broadcasting: Could not stop background threads properly")
             self.port.close()
         return self.outbox.qsize()
 
@@ -166,17 +168,23 @@ class XBeeNetwork(BaseNetwork):
     def send_state(self,pos,heading):
         """Send string of the form:
                 "xx*x*  *y*   *heading* *time*    *ID*"
+        This is a low priority message, it is only scheduled
+        to send if there is no other message in the stack.
         """
         message = "xx%.5f\t%.5f\t%.5f\t%.5f\t%s\n"%(pos[0], pos[1], heading, time(), self.ID)
-        self.outbox.put(message)
+        if self.outbox.empty():
+            self.outbox.put(message)
         return message
 
     def send_heading(self, heading):
         """Send string of the form:
                 "tt*heading*    *time*    *ID*"
+        This is a low priority message, it is only scheduled
+        to send if there is no other message in the stack.
         """
         message = "tt%.5f\t%.5f\t%s\n"%(heading, time(), self.ID)
-        self.outbox.put(message)
+        if self.outbox.empty():
+            self.outbox.put(message)
         return message
 
     def send_wakeup(self):
@@ -221,6 +229,21 @@ class XBeeNetwork(BaseNetwork):
             self.poses[ID] = float(theta)
         except:
             sys.stderr.write("XBeeNetwork.parse_heading(): Bad data received:\n%s\n"%message)
+        return
+
+    def parse_obstacles(self,message):
+        """Parse a message containing a set of obstacle
+        coordinates. Not implemented yet.
+        """
+        raise Exception("XBee.parse_obstacles: Not implemented yet")
+        return
+
+    def parse_position_obstacles(self,message):
+        """Parse a message containing x, y, theta and
+        a set of obstacle coordinates.
+        Not implemented yet.
+        """
+        raise Exception("XBee.parse_position_obstacles: Not implemented yet")
         return
 
     def parse_wakeup(self, message):
@@ -279,7 +302,7 @@ class XBeeNetwork(BaseNetwork):
         send the most recent message whenever the
         time slot is right.
         When the proper time slot is reached, this
-        sends the last put item in the Queue
+        sends the last item put in the Queue.
         and erases the rest.
         """
         while self.broadcasting:
@@ -293,13 +316,6 @@ class XBeeNetwork(BaseNetwork):
                     sleep( (self.window_end-self.window_start)*0.2)
                 else:
                     self.send()
-                    # clear the queue:
-                    while not self.outbox.empty():
-                        try:
-                            self.outbox.get(False)
-                        except Empty:
-                            continue
-                        self.outbox.task_done()
                     # call again time() as the thread-safe operation
                     # can take a sizeable amount of time.
                     sleep( self.window_end - time()%self.period ) # make sure only one message per window is sent.

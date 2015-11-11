@@ -1,4 +1,4 @@
-from BaseRobot import BaseRobot
+from marabunta import BaseRobot
 from math import *
 
 class PerimeterDefenseRobot(BaseRobot):
@@ -45,13 +45,14 @@ class PerimeterDefenseRobot(BaseRobot):
             target = [0.,0.]
             for nei in neis:
                 d2 = (nei[0]-pos[0])**2 + (nei[1]-pos[1])**2
-                target[0] += (pos[0] - nei[0])/d2
-                target[1] += (pos[1] - nei[1])/d2
+                if d2>0:
+                    target[0] += (pos[0] - nei[0])/d2
+                    target[1] += (pos[1] - nei[1])/d2
         else:
             target= None
         return target
 
-    def move_to_target(self, target, deltat, v):
+    def move_to_target(self, target, deltat, v, block=False):
         """If the norm2 of *target* is is larger
         than *threshold*, align the robot to
         *target* and move forward for *deltat*
@@ -60,11 +61,29 @@ class PerimeterDefenseRobot(BaseRobot):
         """
         d2 = target[0]*target[0] + target[1]*target[1]
         if d2 > self.threshold:
-            self.align(target)
+            # Some robots allow for a block argument in
+            # the align method.
+            try:
+                self.body.align(target, block)
+            except:
+                self.align(target)
             self.move_forward(deltat, v)
         else:
             self.move_forward(deltat, 0.)
         return
+
+    def light_detected(self):
+        """If light is detected stop the robot
+        and send the rendezvous signal.
+        """
+        try:
+            light = self.body.light_detected()
+        except AttributeError:
+            light = False
+        if light:
+            self.move_forward(0.,0.)
+            self.broadcast_rendezvous()
+        return light
 
     def update(self, deltat, v=None):
         """Perform one step of the consensus
@@ -87,6 +106,10 @@ class PerimeterDefenseRobot(BaseRobot):
             h= self.body.get_heading()
             target = [1.5*sqrt(self.threshold)*cos(h) ,1.5*sqrt(self.threshold)*sin(h)]
         # Avoid obstacles
-        target = self.correct_target(target)
-        self.move_to_target(target, deltat, v)
+        target = self.correct_target_rotating(target)
+        obstacle = self.obstacle_near()
+        if obstacle and v:
+            v *= 0.5
+        self.move_to_target(target, deltat, v, obstacle)
+        light = self.light_detected()
         return

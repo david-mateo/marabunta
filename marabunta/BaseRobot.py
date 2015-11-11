@@ -1,5 +1,6 @@
-from math import sin, cos, atan2,pi
-
+from math import  *
+import threading
+from time import sleep, time
 #...............................................................................................
 class BaseRobot(object):
     """Base class of Robot containing the
@@ -37,6 +38,8 @@ class BaseRobot(object):
         else:
             raise Exception("The network provided is not an instance of BaseRobot.BaseNetwork")
         self.working = False
+        self.printing = False
+
         return
 
     def is_working(self):
@@ -64,6 +67,7 @@ class BaseRobot(object):
         instance is already turned off.
         """
         if self.is_working():
+            self.stop_printing()
             self.network.stop_broadcasting()
             if "turn_off" in dir(self.body):
                 self.body.turn_off()
@@ -107,10 +111,11 @@ class BaseRobot(object):
     def align(self, direction):
         """Align the heading of the robot to
         a given vector *direction*.
+        Looks for an align method in *self.body*
+        but one is not required.
         """
         if "align" in dir(self.body):
-            self.body.align(direction)
-            dtheta = None
+            dtheta = self.body.align(direction)
         else:
             dtheta = atan2( direction[1], direction[0]) - self.body.get_heading()
             if dtheta > pi:
@@ -119,6 +124,31 @@ class BaseRobot(object):
                 dtheta += 2*pi
             self.rotate(dtheta)
         return dtheta
+
+    def go_to(self, target):
+        """Move the robot to *target*.
+        Calling this will make the robot
+        move in a straight line towards the
+        target point and block the main
+        thread until the point is reached
+        within 80cm accuracy or 2 minutes
+        have passed.
+        """
+        max_time = time() + 2*60
+        v = self.body.max_speed
+        while time() < max_time:
+            delta = [target[0] - self.body.get_position()[0] ,
+                     target[1] - self.body.get_position()[1] ]
+            distance = sqrt(delta[0]*delta[0] + delta[1]*delta[1])
+            if distance > 0.8:
+                delta = self.correct_target_projecting(delta)
+                self.align( delta)
+                self.move_forward( distance/v , v)
+                sleep(0.1)
+            else:
+                self.move_forward( 0., 0.)
+                break
+        return
 
 # Communication methods:
 
@@ -135,6 +165,16 @@ class BaseRobot(object):
             self.network.send_state(self.body.get_position(), self.body.get_heading())
         return
 
+    def broadcast_rendezvous(self):
+        """Broadcast a signal to call everyone
+        to the robot's current location.
+        """
+        if self.is_working():
+            x, y = self.body.get_position()
+            message = "goto %.2f %.2f"%(x, y)
+            self.network.send_message(message)
+        return
+
 # Obstacle avoidance methods:
 
     def obstacle_infront(self):
@@ -144,9 +184,7 @@ class BaseRobot(object):
         Used by move_forward() to stop the robot in case
         something is too close.
         """
-        #TODO Explore the optimal ranges where of each sensor.
-        us = self.body.get_ultrasound()
-        return us[2]<0.31 or us[1]<0.29 or us[3]<0.29
+        return self.body.obstacle_infront()
 
     def obstacle_near(self):
         """Return True if an obstacle is "near" meaning
@@ -154,10 +192,9 @@ class BaseRobot(object):
         of the obstacle even if it may not collide
         directly.
         """
-        #TODO Explore the optimal ranges where of each sensor.
-        return any( d<0.35 for d in self.body.get_ultrasound() if d)
+        return self.body.obstacle_near()
 
-    def correct_target(self, target):
+    def correct_target_projecting(self, target):
         """Correct the target vector *target* so that if the
         robot moves in that direction it will not collide with
         obstacles.
@@ -166,15 +203,98 @@ class BaseRobot(object):
         choose the closest obstacle and project the target vector
         to be perpendicular to the obstacle position.
         """
-        if self.obstacle_near():
+        if self.body.obstacle_near():
             obstacles = self.body.obstacle_coordinates()
             # Find the nearest obstacle:
-            obs = min(obstacles, key=lambda v: v[0]*v[0]+v[1]*v[1])
-            projection = (obs[0]*target[0] + obs[1]*target[1])/(obs[0]*obs[0] + obs[1]*obs[1])
+            dists = [ v[0]*v[0]+v[1]*v[1] for v in obstacles]
+            idx = dists.index( min(dists) )
+            obs = obstacles[idx]
+            projection = (obs[0]*target[0] + obs[1]*target[1]) / (obs[0]*obs[0] + obs[1]*obs[1])
             if projection > 0:
-                target[0] -= obs[0]*projection
-                target[1] -= obs[1]*projection
+                # Purely phenomenological urgency parameter here.
+                urgency = 0.6*( 1. + 4.*max(0., 0.4-dists[idx]) )
+                target[0] -= urgency*obs[0]*projection
+                target[1] -= urgency*obs[1]*projection
         return target
+
+
+    def correct_target_rotating(self, target):
+        """Correct the target vector *target* so that if the
+        robot moves in that direction it will not collide with
+        obstacles.
+        Current implementation: correct if obstacle_near(), not
+        if obstacle_infront(). In case a correction is needed,
+        move perpendicular to the closest obstacle. The perpendicular
+        direction is chosen depending on what is the second closest
+        obstacle. If the closest obstacle is detected by the
+        first or last sensor, add a bit to the rotation (+pi/10)
+        to compensate drift towards obstacles and increase the
+        security distance.
+        """
+        if self.body.obstacle_near():
+            obstacles = self.body.obstacle_coordinates()
+            # Find the nearest obstacle:
+            dists = [ v[0]*v[0]+v[1]*v[1] for v in obstacles]
+            idx = dists.index( min(dists) )
+            obs = obstacles[idx]
+            # Choose left or right:
+            if idx == 0:
+                theta = -0.6*pi
+            elif idx==len(dists)-1:
+                theta = 0.6*pi
+            elif dists[idx-1] < dists[idx+1]:
+                theta = -0.5*pi
+            else:
+                theta = 0.5*pi
+            target[0] = obs[0]*cos(theta) - obs[1]*sin(theta)
+            target[1] = obs[0]*sin(theta) + obs[1]*cos(theta)
+        return target
+
+# Data collection methods:
+
+    def background_print(self,dt):
+        """Print position + obtacles detected in global coordinates.
+        Format:
+            #pose   iter x   y   heading
+            #wall   iter x   y   distance_to_robot
+        It ignores any obstacle detected at less than 40cm from a known
+        agent and any obstacle at more than 60cm from the robot.
+        """
+        print_iter = 0
+        while self.printing:
+            x , y = self.body.get_position()
+            h = self.body.get_heading()
+            obstacles = self.body.obstacle_coordinates()
+            agents = self.get_agents().values()
+            # Check if an obstacle is an agent.
+            walls = []
+            for o in obstacles:
+                if all([(o[0]-a[0])**2 + (o[1]-a[1])**2 > 0.40**2 for a in agents]) and (o[0]**2 + o[1]**2)<0.6**2:
+                    walls.append(o)
+            # print poses and walls
+            print("#pose\t%i\t%.3f\t%.3f\t%.3f"%(print_iter,x,y,h))
+            for wall in walls:
+                print("#wall\t%i\t%.3f\t%.3f\t%.3f"%(print_iter,wall[0]+x,wall[1]+y, sqrt(wall[0]**2 + wall[1]**2)))
+            sleep(dt)
+            print_iter += 1
+        return
+
+    def start_printing(self,dt):
+        """Launch a new thread running background_print."""
+        self.printing = True
+        self.print_thread = threading.Thread(target = self.background_print , args = (dt,) )
+        self.print_thread.start()
+        return
+
+    def stop_printing(self):
+        """Stop the print thread."""
+        if self.printing:
+            self.printing = False
+            self.print_thread.join(10)
+            if self.print_thread.is_alive():
+                raise Exception("marabunta.BaseRobot.stop_printing: Could not stop printing thread properly")
+        return
+
 
 #...............................................................................................
 class BaseBody(object):
@@ -235,6 +355,25 @@ class BaseBody(object):
         x2 = [0.,0.]
         x3 = [0.,0.]
         return [x1, x2, x3]
+
+    def obstacle_infront(self):
+        """Return True if an obstacle is "in front", meaning
+        that extreme measures such as stopping the movement
+        have to be taken to avoid a collision.
+        Used by move_forward() to stop the robot in case
+        something is too close.
+        """
+        raise Exception("The body class in use has not defined a obstacle_infront() method")
+        return False
+
+    def obstacle_near(self):
+        """Return True if an obstacle is "near" meaning
+        that the robot should be aware of the existence
+        of the obstacle even if it may not collide
+        directly.
+        """
+        raise Exception("The body class in use has not defined a obstacle_near() method")
+        return False
 
 #...............................................................................................
 class BaseNetwork(object):

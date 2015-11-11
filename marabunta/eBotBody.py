@@ -1,11 +1,11 @@
-from math import atan2, sin,cos,pi
+from math import atan2, sin,cos,pi,sqrt
 from eBot import eBot
 from BaseRobot import BaseBody
-from threading import Thread
+import threading
 from time import time,sleep
 import sys
 
-class ebotBody(BaseBody,eBot.eBot):
+class eBotBody(BaseBody,eBot.eBot):
     """Body class for controlling an eBot
     (see https://github.com/EdgeBotix/docs )
     by using its python API.
@@ -36,6 +36,9 @@ class ebotBody(BaseBody,eBot.eBot):
         self.LRdist  = LRdist
         self.aperture = aperture
 
+        self.awake = threading.Event()
+        self.aligned = threading.Event()
+        self.awake.set()
         self.moving_background = False
         self.target_heading = None
         self.target_speed = None
@@ -52,7 +55,7 @@ class ebotBody(BaseBody,eBot.eBot):
         """
         if not self.moving_background:
             self.moving_background = True
-            self.thread = Thread(target = self.move_background)
+            self.thread = threading.Thread(target = self.move_background)
             self.thread.start()
         return
 
@@ -64,9 +67,10 @@ class ebotBody(BaseBody,eBot.eBot):
         """
         if self.moving_background:
             self.moving_background = False
+            self.awake.set() # force wakeup to finish the thread
             self.thread.join(10)
             if self.thread.is_alive():
-                raise Exception("ebotBody: Could not stop move_background thread properly")
+                raise Exception("marabunta.ebotBody.stop_move_background: Could not stop move_background thread properly")
         return
 
     def turn_on(self):
@@ -75,6 +79,7 @@ class ebotBody(BaseBody,eBot.eBot):
         """
         self.connect() # from eBot.eBot
         self.target_heading = self.get_heading()
+        self.aligned.set()
         self.target_speed = 0.
         self.start_move_background()
         return
@@ -86,6 +91,16 @@ class ebotBody(BaseBody,eBot.eBot):
         self.stop_move_background()
         self.halt() # from eBot.eBot
         self.disconnect() # from eBot.eBot
+        return
+
+    def wakeup(self):
+        if not self.awake.is_set():
+            self.awake.set()
+        return
+
+    def sleep(self):
+        self.awake.clear()
+        self.halt()
         return
 
 #### Movement ####
@@ -138,14 +153,18 @@ class ebotBody(BaseBody,eBot.eBot):
             self.wheels(0,0)
         return time
 
-    def align(self, direction):
+    def align(self, direction, block=False):
         """Align the heading of the robot to
         a given vector *direction*.
         Use self_target_heading if the background
         move is active, if not use rotate() instead.
+        If block is set to true, wait until the robot
+        is aligned before returning.
         """
         if self.moving_background:
             self.target_heading = atan2( direction[1], direction[0])
+            if block:
+                self.aligned.wait()
         else:
             dtheta = atan2( direction[1], direction[0]) - self.get_heading()
             if dtheta > pi:
@@ -190,7 +209,7 @@ class ebotBody(BaseBody,eBot.eBot):
         # Factor between omega and dtheta.
         # Too big and the robot oscillates before reaching
         # the target heading.
-        gain = 3.0 / pi
+        gain = 2.5 / pi
         while self.moving_background:
             self.update_state()
             dtheta = self.target_heading - self.get_heading()
@@ -199,15 +218,30 @@ class ebotBody(BaseBody,eBot.eBot):
             if dtheta < -pi:
                 dtheta += 2*pi
 
+            if abs(dtheta) > 0.1:
+                self.aligned.clear()
+            else:
+                self.aligned.set()
+
             if abs(dtheta) > 0.01:
                 omega = gain * dtheta
             else:
                 omega = 0.0
             self.move( dt , self.target_speed , omega , stop_flag=False) # this sleeps
+            self.awake.wait()
         self.halt()
         return
 
 # -- Sensors
+
+    def light_detected(self,deltat):
+        """Check if light is detected.
+        If so, sound the buzzer.
+        """
+        light = self.light()[1]>0.9 or self.light()[0]>0.9 # from eBot.eBot
+        if light:
+            self.buzzer(500,2000) # from eBot.eBot
+        return light
 
     def get_position(self):
         """Return the position in
@@ -253,9 +287,9 @@ class ebotBody(BaseBody,eBot.eBot):
         """Ultrasound readings, ignoring the
         sensor on the back.
         If the sensors dont detect anything,
-        infinity is returned.
+        return 2.5 or so (eBot inner workings.)
         """
-        return [u if u<2.45 else float("inf")  for u in self.robot_uS()[0:5]]
+        return self.robot_uS()[0:5]
 
     def obstacle_coordinates(self):
         """Coordinates of the five obstacle points
@@ -271,6 +305,29 @@ class ebotBody(BaseBody,eBot.eBot):
         xR  = [dR *cos(h - theta)    , dR *sin(h - theta)    ]
         xRR = [dRR*cos(h - 2.*theta) , dRR*sin(h - 2.*theta) ]
         return xLL, xL, xC, xR, xRR
+
+    def obstacle_infront(self):
+        """Return True if an obstacle is "in front", meaning
+        that extreme measures such as stopping the movement
+        have to be taken to avoid a collision.
+        Used by move_forward() to stop the robot in case
+        something is too close.
+        """
+        #TODO Explore the optimal ranges where of each sensor.
+        us = self.get_ultrasound()
+        return us[2]<0.30 or us[1]<0.30 or us[3]<0.30
+
+    def obstacle_near(self):
+        """Return True if an obstacle is "near" meaning
+        that the robot should be aware of the existence
+        of the obstacle even if it may not collide
+        directly.
+        """
+        #TODO Explore the optimal ranges where of each sensor.
+        #return any( d<0.4 for d in self.get_ultrasound() if d)
+        us = self.get_ultrasound()
+        return us[2]<0.40 or us[1]<0.40 or us[3]<0.40 or us[0]<0.40 or us[4]<0.40
+
 
     def get_wheel_distance(self):
         """Return the distance between

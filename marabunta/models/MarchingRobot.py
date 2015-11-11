@@ -1,4 +1,4 @@
-from BaseRobot import BaseRobot
+from marabunta import BaseRobot
 from math import *
 
 class MarchingRobot(BaseRobot):
