@@ -70,7 +70,7 @@ class eBotBody(BaseBody,eBot.eBot):
             self.awake.set() # force wakeup to finish the thread
             self.thread.join(10)
             if self.thread.is_alive():
-                raise Exception("marabunta.ebotBody.stop_move_background: Could not stop move_background thread properly")
+                raise Exception("marabunta.eBotBody.stop_move_background: Could not stop move_background thread properly")
         return
 
     def turn_on(self):
@@ -234,7 +234,7 @@ class eBotBody(BaseBody,eBot.eBot):
 
 # -- Sensors
 
-    def light_detected(self,deltat):
+    def light_detected(self):
         """Check if light is detected.
         If so, sound the buzzer.
         """
@@ -278,7 +278,7 @@ class eBotBody(BaseBody,eBot.eBot):
             else:
                 self.heading = h
         except:
-            sys.stderr.write("ebotBody.update_state(): problem calling eBot.eBot.position\n")
+            sys.stderr.write("eBotBody.update_state(): problem calling eBot.eBot.position\n")
             self.pos = None
             self.heading = None
         return

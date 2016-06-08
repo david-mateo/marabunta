@@ -39,7 +39,7 @@ class BaseRobot(object):
             raise Exception("The network provided is not an instance of BaseRobot.BaseNetwork")
         self.working = False
         self.printing = False
-
+        self.last_target = [0.,0.]
         return
 
     def is_working(self):
@@ -125,22 +125,22 @@ class BaseRobot(object):
             self.rotate(dtheta)
         return dtheta
 
-    def go_to(self, target):
+    def go_to(self, target, tol=0.8, max_time = 120):
         """Move the robot to *target*.
         Calling this will make the robot
         move in a straight line towards the
         target point and block the main
         thread until the point is reached
-        within 80cm accuracy or 2 minutes
-        have passed.
+        within *tol* accuracy or *max_time*
+        seconds have passed.
         """
-        max_time = time() + 2*60
+        end_time = time() + max_time
         v = self.body.max_speed
-        while time() < max_time:
+        while time() < end_time:
             delta = [target[0] - self.body.get_position()[0] ,
                      target[1] - self.body.get_position()[1] ]
             distance = sqrt(delta[0]*delta[0] + delta[1]*delta[1])
-            if distance > 0.8:
+            if distance > tol:
                 delta = self.correct_target_projecting(delta)
                 self.align( delta)
                 self.move_forward( distance/v , v)
@@ -148,6 +148,15 @@ class BaseRobot(object):
             else:
                 self.move_forward( 0., 0.)
                 break
+        return
+
+    def follow_path(self,targets, tol=0.8, max_time_ppt=120):
+        """Move the robot along the path
+        specified by *targets*.
+        Uses the self.go_to method.
+        """
+        for target in targets:
+            self.go_to(target, tol, max_time_ppt)
         return
 
 # Communication methods:
@@ -165,13 +174,32 @@ class BaseRobot(object):
             self.network.send_state(self.body.get_position(), self.body.get_heading())
         return
 
+    def broadcast_state_obstacles(self):
+        """If no obstacles are detected then it calls the send_state method instead."""
+        if self.is_working():
+            obstacles =self.body.obstacle_global_coordinates()
+            if obstacles:
+                self.network.send_state_obstacles(self.body.get_position(), self.body.get_heading(), obstacles )
+            else:
+                self.network.send_state(self.body.get_position(), self.body.get_heading())
+        return
+
+
+    def broadcast_obstacles(self):
+        """Only send if obstacles are detected."""
+        if self.is_working():
+            obstacles =self.body.obstacle_global_coordinates()
+            if obstacles:
+                self.network.send_obstacles( obstacles )
+        return
+
     def broadcast_rendezvous(self):
         """Broadcast a signal to call everyone
         to the robot's current location.
         """
         if self.is_working():
             x, y = self.body.get_position()
-            message = "goto %.2f %.2f"%(x, y)
+            message = "goto %.2f %.2f\n"%(x, y)
             self.network.send_message(message)
         return
 
@@ -194,6 +222,67 @@ class BaseRobot(object):
         """
         return self.body.obstacle_near()
 
+    def frontal_obstacle_coordinates(self, obs_coords):
+        """Return the frontal projection of a list of coordinates.
+        Assuming the obstacles form a straight line, the
+        frontal projection is the point in that line closer to
+        the robot.
+        """
+        n = len(obs_coords)
+        if n:
+            x = sum(o[0] for o in obs_coords)/n
+            y = sum(o[1] for o in obs_coords)/n
+            x2 = sum(o[0]*o[0] for o in obs_coords)/n
+            y2 = sum(o[1]*o[1] for o in obs_coords)/n
+            xy = sum(o[0]*o[1] for o in obs_coords)/n
+            sx2 = x2 - x*x
+            sy2 = y2 - y*y
+            cxy = (xy - x*y)
+            try:
+                x0 = cxy*(x*xy - x2*y) / (cxy*cxy + sx2*sx2)
+            except:
+                x0 = x
+            try:
+                y0 = cxy*(y*xy - y2*x) / (cxy*cxy + sy2*sy2)
+            except:
+                y0 = y
+        else:
+            x0 = None
+            y0 = None
+        return (x0,y0)
+
+    def correct_target(self, target):
+        """Correct the target vector *target* so that if the
+        robot moves in that direction it will not collide with
+        obstacles.
+        Current implementation: correct if obstacle_near(), not
+        if obstacle_infront(). In case a correction is needed,
+        choose the closest obstacle and project the target vector
+        to be perpendicular to the obstacle position.
+        """
+        if self.body.obstacle_near():
+            obstacles = self.body.obstacle_coordinates()
+            #obs = self.frontal_obstacle_coordinates(obstacles)
+            # Find the nearest obstacle:
+            dists = [ v[0]*v[0]+v[1]*v[1] for v in obstacles]
+            idx = dists.index( min(dists) )
+            obs = obstacles[idx]
+            projection = (obs[0]*target[0] + obs[1]*target[1]) / (obs[0]*obs[0] + obs[1]*obs[1])
+            if projection > 0:
+                if projection < 0.80:
+                    target[0] -= 1.1*obs[0]*projection
+                    target[1] -= 1.1*obs[1]*projection
+                else:
+                    # Choose left or right depending on last_target:
+                    if obs[0]*self.last_target[1] - obs[1]*self.last_target[0] > 0.:
+                        theta =  0.55*pi
+                    else:
+                        theta = -0.55*pi
+                    target[0] = 100.*obs[0]*cos(theta) - 100.*obs[1]*sin(theta)
+                    target[1] = 100.*obs[0]*sin(theta) + 100.*obs[1]*cos(theta)
+        self.last_target = target[:]
+        return target
+
     def correct_target_projecting(self, target):
         """Correct the target vector *target* so that if the
         robot moves in that direction it will not collide with
@@ -209,10 +298,11 @@ class BaseRobot(object):
             dists = [ v[0]*v[0]+v[1]*v[1] for v in obstacles]
             idx = dists.index( min(dists) )
             obs = obstacles[idx]
+            dist = sqrt(dists[idx])
             projection = (obs[0]*target[0] + obs[1]*target[1]) / (obs[0]*obs[0] + obs[1]*obs[1])
             if projection > 0:
                 # Purely phenomenological urgency parameter here.
-                urgency = 0.6*( 1. + 4.*max(0., 0.4-dists[idx]) )
+                urgency = 0.6*( 1. + 4.*max(0., 0.4-dist) )
                 target[0] -= urgency*obs[0]*projection
                 target[1] -= urgency*obs[1]*projection
         return target
@@ -269,7 +359,7 @@ class BaseRobot(object):
             # Check if an obstacle is an agent.
             walls = []
             for o in obstacles:
-                if all([(o[0]-a[0])**2 + (o[1]-a[1])**2 > 0.40**2 for a in agents]) and (o[0]**2 + o[1]**2)<0.6**2:
+                if all([(o[0]-a[0])**2 + (o[1]-a[1])**2 > 0.40**2 for a in agents]):
                     walls.append(o)
             # print poses and walls
             print("#pose\t%i\t%.3f\t%.3f\t%.3f"%(print_iter,x,y,h))
@@ -283,6 +373,7 @@ class BaseRobot(object):
         """Launch a new thread running background_print."""
         self.printing = True
         self.print_thread = threading.Thread(target = self.background_print , args = (dt,) )
+        self.print_thread.daemon = True
         self.print_thread.start()
         return
 
@@ -355,6 +446,14 @@ class BaseBody(object):
         x2 = [0.,0.]
         x3 = [0.,0.]
         return [x1, x2, x3]
+
+    def obstacle_global_coordinates(self):
+        """Same as obstacle_coordinates but setting
+        the origin of coordinates to the ground truth
+        origin and not relative to the robot position.
+        """
+        pos = self.get_position()
+        return [ (ob[0]+pos[0], ob[1]+pos[1]) for ob in self.obstacle_coordinates()]
 
     def obstacle_infront(self):
         """Return True if an obstacle is "in front", meaning

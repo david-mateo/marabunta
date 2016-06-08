@@ -16,7 +16,16 @@ class PerimeterDefenseRobot(BaseRobot):
     def __init__(self, body, network, threshold):
         BaseRobot.__init__(self, body, network)
         self.threshold = threshold
+        self.rendezvous_point = None
+        self.path = []
+        self.known_lights = []
+        self.num_lights = 0
         return
+
+    
+    def set_path(self, path):
+        self.path = path[:]
+        return self.path
 
     def spread_target(self):
         """Get the other agent's state and
@@ -48,9 +57,43 @@ class PerimeterDefenseRobot(BaseRobot):
                 if d2>0:
                     target[0] += (pos[0] - nei[0])/d2
                     target[1] += (pos[1] - nei[1])/d2
+        
+            norm2 = target[0]*target[0] + target[1]*target[1]
+            if norm2 < self.threshold:
+                target = None
         else:
-            target= None
+            target = None
         return target
+
+    def rendezvous_target(self):
+        """Compute the target direction of movement
+        that allows the robot to reach the rendezvous point
+        (stored in self.rendezvous_point).
+        When the robot is close enough to the point this
+        sets self.rendezvous_point to None and also returns
+        None as the target.
+        """
+        if self.rendezvous_point:
+            pos = self.body.get_position()
+            target = [ self.rendezvous_point[0]-pos[0] , self.rendezvous_point[1]-pos[1] ]
+            distance = sqrt(target[0]*target[0]+target[1]*target[1])
+            if distance < 0.10: # rendezvous point reached
+                try:
+                    self.rendezvous_point = self.path.pop(0)
+                    target = self.rendezvous_target()
+                except:
+                    target = [0., 0.]
+                    self.rendezvous_point = None
+        else:
+            try:
+                self.rendezvous_point = self.path.pop(0)
+                target = self.rendezvous_target()
+            except:
+                target = None
+                self.rendezvous_point = None
+        return target
+
+
 
     def move_to_target(self, target, deltat, v, block=False):
         """If the norm2 of *target* is is larger
@@ -59,31 +102,64 @@ class PerimeterDefenseRobot(BaseRobot):
         at a speed *v*.
         Else, stop for *deltat*.
         """
-        d2 = target[0]*target[0] + target[1]*target[1]
-        if d2 > self.threshold:
+        if target[0]**2 + target[1]**2 > self.threshold*self.threshold:
             # Some robots allow for a block argument in
             # the align method.
             try:
                 self.body.align(target, block)
-            except:
+            except (TypeError,AttributeError):
                 self.align(target)
             self.move_forward(deltat, v)
         else:
-            self.move_forward(deltat, 0.)
+            self.move_forward(deltat, 0)
         return
 
     def light_detected(self):
-        """If light is detected stop the robot
-        and send the rendezvous signal.
+        """If light is detected and is a
+        new light, broadcast its positon
+        and add it to the list of known
+        light sources.
         """
         try:
             light = self.body.light_detected()
         except AttributeError:
             light = False
         if light:
-            self.move_forward(0.,0.)
-            self.broadcast_rendezvous()
+            x, y = self.body.get_position()
+            self.add_light(x,y)
         return light
+
+    def process_messages(self):
+        messages = self.network.get_messages()
+        for message in messages:
+            if len(message)>3:
+                mesdata = message.split()
+                if mesdata[0]=="stop":
+                    raise Exception("Stop!")
+                elif mesdata[0]=="goto":
+                    try:
+                        self.rendezvous_point =  (float(mesdata[1]), float(mesdata[2]))
+                    except:
+                        print("#PerimenterDefenseRobot: Strange message received: ",message)
+                elif mesdata[0]=="light":
+                    try:
+                        x, y = float(mesdata[1]), float(mesdata[2])
+                    except:
+                        x, y = None, None
+                        print("#PerimenterDefenseRobot: Strange message received: ",message)
+                    self.add_light(x,y)
+        return messages
+
+    def add_light(self, x, y):
+        """Only add light to the list of known lights if 
+        this new one is at least 0.8 from any other
+        previously known light.
+        """
+        if all( (x-light[0])**2 + (y-light[1])**2 > 0.8 * 0.8 for light in self.known_lights):
+            self.known_lights.append( (x,y) )
+            self.num_lights += 1
+            self.network.send_message("light\t%.2f\t%.2f\n"%(x,y))
+        return
 
     def update(self, deltat, v=None):
         """Perform one step of the consensus
@@ -100,16 +176,23 @@ class PerimeterDefenseRobot(BaseRobot):
             4. Move in the desired target direction.
         """
         self.broadcast_state()
-        # Perform swarming
-        target = self.spread_target()
+        self.process_messages()
+        # If goto message received, go there
+        target = self.rendezvous_target()
+        # check if rendezvous point has been reached
+        if target and target[0]==0 and target[1]==0:
+            return False, True # STOP HERE!
+        if not target:
+            # Perform swarming
+            target = self.spread_target()
         if not target:
             h= self.body.get_heading()
-            target = [1.5*sqrt(self.threshold)*cos(h) ,1.5*sqrt(self.threshold)*sin(h)]
+            target = [10.*sqrt(self.threshold)*cos(h) ,10.*sqrt(self.threshold)*sin(h)]
         # Avoid obstacles
-        target = self.correct_target_rotating(target)
+        target = self.correct_target(target)
         obstacle = self.obstacle_near()
         if obstacle and v:
-            v *= 0.5
+            v *= 0.6
         self.move_to_target(target, deltat, v, obstacle)
         light = self.light_detected()
-        return
+        return light, False

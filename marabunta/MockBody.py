@@ -22,7 +22,7 @@ class MockBody(BaseBody):
     def move_forward(self, dt, v = None):
         """Move in current direction for dt time.
         """
-        if v==None:
+        if v==None or v > self.max_speed:
             v = self.max_speed
         self.pos[0] += v * cos(self.heading) * dt
         self.pos[1] += v * sin(self.heading) * dt
@@ -72,11 +72,11 @@ class MockBody(BaseBody):
         stored in self.obstacles, return []
         """
         try:
-            obstacles_near = self.obstacles.obstacles_near(self.pos)
+            obs = self.obstacles.obstacles_near(self.pos)
         except:
             return []
         x , y = self.pos
-        return [ sqrt( (o[0]-x)**2 + (o[1]-y)**2 ) for o in obstacles_near ]
+        return [ sqrt( (o[0]-x)**2 + (o[1]-y)**2 ) for o in obs]
 
     def obstacle_coordinates(self):
         """Return the relative position of all the
@@ -85,11 +85,11 @@ class MockBody(BaseBody):
         stored in self.obstacles, return []
         """
         try:
-            obstacles_near = self.obstacles.obstacles_near(self.pos)
+            obs = self.obstacles.obstacles_near(self.pos)
         except:
             return []
         x , y = self.pos
-        return [ [o[0]-x, o[1]-y] for o in obstacles_near]
+        return [ [o[0]-x, o[1]-y] for o in obs if (o[0]-x)**2 + (o[1]-y)**2 < 1.4*1.4]
 
     def obstacle_infront(self):
         """Return True if an obstacle is "in front", meaning
@@ -98,7 +98,8 @@ class MockBody(BaseBody):
         Used by move_forward() to stop the robot in case
         something is too close.
         """
-        return any( d<0.2 for d in self.get_ultrasound() if d)
+        return any( d<0.02 for d in self.get_ultrasound() if d)
+
 
     def obstacle_near(self):
         """Return True if an obstacle is "near" meaning
@@ -106,7 +107,7 @@ class MockBody(BaseBody):
         of the obstacle even if it may not collide
         directly.
         """
-        return any( d<0.4 for d in self.get_ultrasound() if d)
+        return any( d<0.30 for d in self.get_ultrasound() if d)
 
 
     def get_wheel_distance(self):

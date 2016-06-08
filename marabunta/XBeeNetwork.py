@@ -265,7 +265,7 @@ class XBeeNetwork(BaseNetwork):
         self.inbox.put(message)
         return
 
-    def get_incomings(self):
+    def get_messages(self):
         """Returns all incoming messages received since
         last call to this method. The messages are
         returned in a list sorted from newest to oldest

@@ -1,10 +1,34 @@
 from BaseRobot import BaseRobot, BaseBody, BaseNetwork
 from MockBody import MockBody
 from MockNetwork import MockNetwork
-from XBeeNetwork import XBeeNetwork, XBeeExpirationNetwork
-from eBotBody import eBotBody
+from Map import Map2D
 
 __all__ = [ 'BaseRobot', 'BaseBody', 'BaseNetwork',
             'MockBody', 'MockNetwork',
-            'XBeeNetwork', 'XBeeExpirationNetwork',
-            'eBotBody']
+            'Map2D'
+            ]
+
+# Include eBotBody only if eBot-API is installed
+import imp
+try:
+    imp.find_module('eBot')
+    include_eBot = True
+except ImportError:
+    include_eBot = False
+
+if include_eBot:
+    from eBotBody import eBotBody
+    __all__.append('eBotBody')
+del include_eBot
+
+# Include XBee*Network only if serial is installed
+try:
+    imp.find_module('serial')
+    include_serial = True
+except ImportError:
+    include_serial = False
+
+if include_serial:
+    from XBeeNetwork import XBeeNetwork, XBeeExpirationNetwork
+    __all__.extend(['XBeeNetwork', 'XBeeExpirationNetwork'])
+del include_serial
