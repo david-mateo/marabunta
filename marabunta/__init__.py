@@ -2,14 +2,13 @@ from BaseRobot import BaseRobot, BaseBody, BaseNetwork
 from MockBody import MockBody
 from MockNetwork import MockNetwork
 from Map import Map2D
+import imp
 
-__all__ = [ 'BaseRobot', 'BaseBody', 'BaseNetwork',
-            'MockBody', 'MockNetwork',
-            'Map2D'
-            ]
+__all__ = ['BaseRobot', 'BaseBody', 'BaseNetwork',
+           'MockBody', 'MockNetwork',
+           'Map2D']
 
 # Include eBotBody only if eBot-API is installed
-import imp
 try:
     imp.find_module('eBot')
     include_eBot = True
