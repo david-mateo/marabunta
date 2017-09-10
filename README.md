@@ -11,6 +11,9 @@ The design of robots using this library consists of three main pieces:
 2.  The network the robot uses to communicate with other robots.
 3.  The behavior or protocol the robot follows, i.e. what it does with the information received from the body and the network.
 
+
+![Schematic use of marabunta to enable swarming](docs/schema.png)
+
 The marabunta library follows this structure and provides the following classes:
 
 *   **BaseBody**: [[marabunta/BaseRobot.py]](marabunta/BaseRobot.py) Minimal model of `Body` with the required methods to use as a body of a robot. Any body models should inherit from this class to be accepted by `BaseRobot`.
@@ -93,4 +96,4 @@ One can find several ways to operate the robots in the scripts contained in [`ex
 
 ## References
 
-*  Swarm-Enabling Technology for Multi-Robot Systems. <http://journal.frontiersin.org/article/10.3389/frobt.2017.00012/>
+*   Swarm-Enabling Technology for Multi-Robot Systems. <http://journal.frontiersin.org/article/10.3389/frobt.2017.00012/>
